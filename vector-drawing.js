@@ -12,7 +12,6 @@ let gl;
 // Stores objects containing drawing mode and vertex length for that mode
 let drawingHistory = [];
 
-
 // Once the document is fully loaded run this init function.
 window.addEventListener('load', function init() {
     // Get the HTML5 canvas object from it's ID
@@ -23,6 +22,7 @@ window.addEventListener('load', function init() {
     gl = canvas.getContext('webgl2');
     if (!gl) { window.alert("WebGL isn't available"); return; }
 
+    // Initialize byte offsets
     gl.currentCoordByteOffset = 0;
     gl.currentColorByteOffset = 0;
 
@@ -49,10 +49,8 @@ function initProgram() {
     let vertShader = compileShader(gl, gl.VERTEX_SHADER,
         `#version 300 es
         precision mediump float;
-
         in vec4 aPosition;
         in vec4 aColor;
-
         out vec4 vColor;
         
         void main() {
@@ -65,10 +63,8 @@ function initProgram() {
     let fragShader = compileShader(gl, gl.FRAGMENT_SHADER,
         `#version 300 es
         precision mediump float;
-
         in vec4 vColor;
         out vec4 fragColor;
-
         void main() {
             fragColor = vColor;
         }`
@@ -122,17 +118,17 @@ function initBuffers() {
  * in the HTML inputs.
  */
 function initEvents() {
-    // Drawing mode event listener and initial value
+    // Drawing mode event handler/listener and set initial value
     const mode = document.getElementById('draw-mode');
     gl.drawingMode = mode.value;
-    mode.addEventListener('change', changeMode);
+    mode.addEventListener('change', function changeMode() { gl.drawingMode = this.value; });
 
-    // Color event listener and convert inital color in hex to rgb
+    // Color event listener/handler and convert colors from hex to rgb (0 to 1)
     const color = document.getElementById('draw-color');
     gl.drawingColor = hexToRgb(color.value);
-    color.addEventListener('change', changeColor);
+    color.addEventListener('change', function changeColor() { gl.drawingColor = hexToRgb(this.value); });
 
-    // Canvas event listener
+    // Canvas click event listener
     document.getElementById('webgl-canvas').addEventListener('click', addVertex);
     // Download button event listener
     document.getElementById("download").addEventListener('click', downloadDrawing);
@@ -154,9 +150,8 @@ function render() {
     let startingIndexPerMode = 0;
     drawingHistory.forEach(drawingMode => {
         // Draw using the current mode for the number of vertices saved 
-        let count = drawingMode.vertLength;
-        gl.drawArrays(gl[drawingMode.mode], startingIndexPerMode, count);
-        startingIndexPerMode += count; // Update buffer offset 
+        gl.drawArrays(gl[drawingMode.mode], startingIndexPerMode, drawingMode.vertLength);
+        startingIndexPerMode += drawingMode.vertLength; // Update buffer offset 
     });
 
     // Cleanup
@@ -189,6 +184,9 @@ function addVertex(e) {
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.colorBuffer); 
     gl.bufferSubData(gl.ARRAY_BUFFER, gl.currentColorByteOffset, Float32Array.from(gl.drawingColor)); // Add new color to buffer   
 
+    // Cleanup
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
     // Update offsets
     gl.currentCoordByteOffset += 2*Float32Array.BYTES_PER_ELEMENT;
     gl.currentColorByteOffset += 3*Float32Array.BYTES_PER_ELEMENT;
@@ -205,24 +203,8 @@ function hexToRgb(hexValue) {
     return [
         parseInt(hexValue.substr(1, 2), 16) / 255, // compute "R" value
         parseInt(hexValue.substr(3, 2), 16) / 255, // compute "G" value
-        parseInt(hexValue.substr(5, 2), 16) / 255  // compute "B" value
+        parseInt(hexValue.substr(5, 2), 16) / 255,  // compute "B" value
     ];
-}
-
-
-/**
- * Event handler for setting drawing color after Hex to RGB conversion.
- */
-function changeColor() {
-    gl.drawingColor = hexToRgb(this.value);
-}
-
-
-/**
- * Event handler for setting the drawing mode.
- */
-function changeMode() {
-    gl.drawingMode = this.value;
 }
 
 
@@ -232,21 +214,20 @@ function changeMode() {
  */
 function downloadDrawing() {
     // Create Float arrays whose sizes are the amounts of vertices and colors we have
-    let vertBuffer = new Float32Array(gl.currentCoordByteOffset / Float32Array.BYTES_PER_ELEMENT);
-    let colorBuffer = new Float32Array(gl.currentColorByteOffset / Float32Array.BYTES_PER_ELEMENT);
+    let vertices = new Float32Array(gl.currentCoordByteOffset / Float32Array.BYTES_PER_ELEMENT);
+    let colors = new Float32Array(gl.currentColorByteOffset / Float32Array.BYTES_PER_ELEMENT);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.posBuffer);
-    gl.getBufferSubData(gl.ARRAY_BUFFER, 0, vertBuffer); // Retrieve the vertices from the position buffer and store them in a float array
+    gl.getBufferSubData(gl.ARRAY_BUFFER, 0, vertices); // Retrieve the vertices from the position buffer and store them in a float array
 
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.colorBuffer);
-    gl.getBufferSubData(gl.ARRAY_BUFFER, 0, colorBuffer);// Retrieve the colors from the color buffer and store them in a float array
+    gl.getBufferSubData(gl.ARRAY_BUFFER, 0, colors);// Retrieve the colors from the color buffer and store them in a float array
 
     // Push the vertex and color arrays onto the drawing history
-    drawingHistory.push(vertBuffer);
-    drawingHistory.push(colorBuffer);
+    drawingHistory.push(vertices, colors);
 
     // Create and click a link, saving the drawing history in a JSON file
-    let downloadLink = document.createElement("a")
+    let downloadLink = document.createElement("a");
     downloadLink.download = prompt("Enter file name:") + ".json";
     downloadLink.href = URL.createObjectURL(new Blob([JSON.stringify(drawingHistory)]));
     downloadLink.click();
@@ -267,21 +248,24 @@ function uploadDrawing() {
         let reader = new FileReader();
 
         // Sets up event listener and executes event handler once readAsText is complete
-        reader.addEventListener('loadend', () => {
-            let history = JSON.parse(reader.result);
-            let color = history.pop(); // Pops color data from end of history
-            let vertices = history.pop(); // Pops vertex data from end of history
+        reader.addEventListener('load', () => {
+            drawingHistory = JSON.parse(reader.result);
+            let colors = Object.values(drawingHistory.pop()); // Pops color data from end of history
+            let vertices = Object.values(drawingHistory.pop()); // Pops vertex data from end of history
 
             // Add vertices to position buffer
             gl.bindBuffer(gl.ARRAY_BUFFER, gl.posBuffer);
-            gl.bufferSubData(gl.ARRAY_BUFFER, 0, Float32Array.from(Object.values(vertices)));
+            gl.bufferSubData(gl.ARRAY_BUFFER, 0, Float32Array.from(vertices));
 
             // Add colors to color buffer
-            gl.bindBuffer(gl.ARRAY_BUFFER, gl.colorBuffer)
-            gl.bufferSubData(gl.ARRAY_BUFFER, 0, Float32Array.from(Object.values(color)));
+            gl.bindBuffer(gl.ARRAY_BUFFER, gl.colorBuffer);
+            gl.bufferSubData(gl.ARRAY_BUFFER, 0, Float32Array.from(colors));
+
+            // Update byte offsets
+            gl.currentCoordByteOffset = vertices.length * Float32Array.BYTES_PER_ELEMENT;
+            gl.currentColorByteOffset = colors.length * Float32Array.BYTES_PER_ELEMENT;
 
             // Set drawing history and render drawing
-            drawingHistory = history;
             render();
         });
         reader.readAsText(file);
